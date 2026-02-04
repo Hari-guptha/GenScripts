@@ -1,0 +1,114 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: admin123
+          MONGO_INITDB_DATABASE: genscripts
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        ports:
+          - 5672:5672
+        env:
+          RABBITMQ_DEFAULT_USER: admin
+          RABBITMQ_DEFAULT_PASS: admin123
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Install Playwright browsers
+        run: |
+          cd frontend
+          npx playwright install --with-deps chromium
+
+      - name: Build backend
+        run: |
+          cd backend
+          npm run build
+
+      - name: Start backend
+        run: |
+          cd backend
+          npm run start:prod &
+        env:
+          MONGODB_URI: mongodb://admin:admin123@localhost:27017/genscripts?authSource=admin
+          API_PORT: 3001
+          JWT_SECRET: test-secret-key
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Start frontend
+        run: |
+          cd frontend
+          npm run start &
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+
+      - name: Wait for services
+        run: |
+          npx wait-on http://localhost:3001 http://localhost:3000 -t 60000
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          npm run test:e2e
+        env:
+          MONGODB_URI: mongodb://admin:admin123@localhost:27017/genscripts?authSource=admin
+
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          npm run test:e2e
+        env:
+          CI: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            frontend/playwright-report/
+            backend/coverage/
